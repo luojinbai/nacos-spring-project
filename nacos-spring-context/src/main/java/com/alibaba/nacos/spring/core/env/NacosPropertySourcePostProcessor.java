@@ -113,13 +113,15 @@ public class NacosPropertySourcePostProcessor
 
 				@Override
 				public void receiveConfigInfo(String config) {
+					// example|DEFAULT_GROUP|||127.0.0.1:8848|||||UTF-8||
 					String name = nacosPropertySource.getName();
 					NacosPropertySource newNacosPropertySource = new NacosPropertySource(
 							dataId, groupId, name, config, type);
 					newNacosPropertySource.copy(nacosPropertySource);
 					MutablePropertySources propertySources = environment
 							.getPropertySources();
-					// replace NacosPropertySource
+					// replace NacosPropertySource, 更新PropertySource，也就是environment的取值，environment的取值是从
+					// org.springframework.core.env.PropertySourcesPropertyResolver.getProperty(java.lang.String, java.lang.Class<T>, boolean)中的PropertySource取值
 					propertySources.replace(name, newNacosPropertySource);
 				}
 			};

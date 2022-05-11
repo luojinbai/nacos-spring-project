@@ -18,6 +18,9 @@ package com.alibaba.nacos.spring.context.event.config;
 
 import java.util.concurrent.Executor;
 
+import com.alibaba.nacos.spring.context.annotation.config.NacosPropertySource;
+import com.alibaba.nacos.spring.context.annotation.config.NacosValueAnnotationBeanPostProcessor;
+import com.alibaba.nacos.spring.core.env.NacosPropertySourcePostProcessor;
 import org.springframework.context.ApplicationEventPublisher;
 
 import com.alibaba.nacos.api.config.ConfigService;
@@ -38,67 +41,75 @@ import com.alibaba.nacos.api.config.listener.Listener;
  */
 public final class DelegatingEventPublishingListener implements Listener {
 
-	private final ConfigService configService;
+    private final ConfigService configService;
 
-	private final String dataId;
+    private final String dataId;
 
-	private final String groupId;
+    private final String groupId;
 
-	private final ApplicationEventPublisher applicationEventPublisher;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
-	private final String configType;
+    private final String configType;
 
-	private final Executor executor;
+    private final Executor executor;
 
-	private final Listener delegate;
+    private final Listener delegate;
 
-	DelegatingEventPublishingListener(ConfigService configService, String dataId,
-			String groupId, ApplicationEventPublisher applicationEventPublisher,
-			Executor executor, Listener delegate) {
-		this(configService, dataId, groupId, ConfigType.PROPERTIES.getType(),
-				applicationEventPublisher, executor, delegate);
-	}
+    DelegatingEventPublishingListener(ConfigService configService, String dataId,
+                                      String groupId, ApplicationEventPublisher applicationEventPublisher,
+                                      Executor executor, Listener delegate) {
+        this(configService, dataId, groupId, ConfigType.PROPERTIES.getType(),
+                applicationEventPublisher, executor, delegate);
+    }
 
-	DelegatingEventPublishingListener(ConfigService configService, String dataId,
-			String groupId, String configType,
-			ApplicationEventPublisher applicationEventPublisher, Executor executor,
-			Listener delegate) {
-		this.configService = configService;
-		this.dataId = dataId;
-		this.groupId = groupId;
-		this.configType = configType;
-		this.applicationEventPublisher = applicationEventPublisher;
-		this.executor = executor;
-		this.delegate = delegate;
-	}
+    DelegatingEventPublishingListener(ConfigService configService, String dataId,
+                                      String groupId, String configType,
+                                      ApplicationEventPublisher applicationEventPublisher, Executor executor,
+                                      Listener delegate) {
+        this.configService = configService;
+        this.dataId = dataId;
+        this.groupId = groupId;
+        this.configType = configType;
+        this.applicationEventPublisher = applicationEventPublisher;
+        this.executor = executor;
+        this.delegate = delegate;
+    }
 
-	@Override
-	public Executor getExecutor() {
-		Executor executor = delegate.getExecutor();
-		if (executor == null) {
-			executor = this.executor;
-		}
-		return executor;
-	}
+    @Override
+    public Executor getExecutor() {
+        Executor executor = delegate.getExecutor();
+        if (executor == null) {
+            executor = this.executor;
+        }
+        return executor;
+    }
 
-	/**
-	 * Callback method on Nacos config received
-	 *
-	 * @param content Nacos config
-	 */
-	@Override
-	public void receiveConfigInfo(String content) {
-		onReceived(content);
-		publishEvent(content);
-	}
+    /**
+     * Callback method on Nacos config received
+     * <p>
+     * 通过listener的回调到这里，通知到
+     *
+     * @param content Nacos config
+     * @see NacosValueAnnotationBeanPostProcessor#onApplicationEvent(NacosConfigReceivedEvent)
+     */
+    @Override
+    public void receiveConfigInfo(String content) {
+        onReceived(content);
+        publishEvent(content);
+    }
 
-	private void publishEvent(String content) {
-		NacosConfigReceivedEvent event = new NacosConfigReceivedEvent(configService,
-				dataId, groupId, content, configType);
-		applicationEventPublisher.publishEvent(event);
-	}
+    private void publishEvent(String content) {
+        NacosConfigReceivedEvent event = new NacosConfigReceivedEvent(configService,
+                dataId, groupId, content, configType);
+        applicationEventPublisher.publishEvent(event);
+    }
 
-	private void onReceived(String content) {
-		delegate.receiveConfigInfo(content);
-	}
+    /**
+     * 这里的delegate = {@link NacosPropertySourcePostProcessor}
+     *
+     * {@link NacosPropertySource}注解的后置处理器
+     */
+    private void onReceived(String content) {
+        delegate.receiveConfigInfo(content);
+    }
 }

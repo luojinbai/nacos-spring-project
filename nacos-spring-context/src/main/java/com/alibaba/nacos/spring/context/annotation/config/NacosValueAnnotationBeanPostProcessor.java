@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.alibaba.nacos.spring.context.event.config.DelegatingEventPublishingListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
@@ -59,336 +60,342 @@ import com.alibaba.spring.beans.factory.annotation.AbstractAnnotationBeanPostPro
  * @since 0.1.0
  */
 public class NacosValueAnnotationBeanPostProcessor
-		extends AbstractAnnotationBeanPostProcessor implements BeanFactoryAware,
-		EnvironmentAware, ApplicationListener<NacosConfigReceivedEvent> {
+        extends AbstractAnnotationBeanPostProcessor implements BeanFactoryAware,
+        EnvironmentAware, ApplicationListener<NacosConfigReceivedEvent> {
 
-	/**
-	 * The name of {@link NacosValueAnnotationBeanPostProcessor} bean.
-	 */
-	public static final String BEAN_NAME = "nacosValueAnnotationBeanPostProcessor";
+    /**
+     * The name of {@link NacosValueAnnotationBeanPostProcessor} bean.
+     */
+    public static final String BEAN_NAME = "nacosValueAnnotationBeanPostProcessor";
 
-	private static final String SPEL_PREFIX = "#{";
+    private static final String SPEL_PREFIX = "#{";
 
-	private static final String PLACEHOLDER_PREFIX = "${";
+    private static final String PLACEHOLDER_PREFIX = "${";
 
-	private static final String PLACEHOLDER_SUFFIX = "}";
+    private static final String PLACEHOLDER_SUFFIX = "}";
 
-	private static final String VALUE_SEPARATOR = ":";
+    private static final String VALUE_SEPARATOR = ":";
 
-	private final Logger logger = LoggerFactory.getLogger(getClass());
+    private final Logger logger = LoggerFactory.getLogger(getClass());
 
-	/**
-	 * placeholder, nacosValueTarget.
-	 */
-	private Map<String, List<NacosValueTarget>> placeholderNacosValueTargetMap = new HashMap<String, List<NacosValueTarget>>();
+    /**
+     * placeholder, nacosValueTarget.
+     */
+    private Map<String, List<NacosValueTarget>> placeholderNacosValueTargetMap = new HashMap<String, List<NacosValueTarget>>();
 
-	private ConfigurableListableBeanFactory beanFactory;
+    private ConfigurableListableBeanFactory beanFactory;
 
-	private Environment environment;
+    private Environment environment;
 
-	private BeanExpressionResolver exprResolver;
+    private BeanExpressionResolver exprResolver;
 
-	private BeanExpressionContext exprContext;
+    private BeanExpressionContext exprContext;
 
-	public NacosValueAnnotationBeanPostProcessor() {
-		super(NacosValue.class);
-	}
+    public NacosValueAnnotationBeanPostProcessor() {
+        super(NacosValue.class);
+    }
 
-	@Override
-	public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
-		if (!(beanFactory instanceof ConfigurableListableBeanFactory)) {
-			throw new IllegalArgumentException(
-					"NacosValueAnnotationBeanPostProcessor requires a ConfigurableListableBeanFactory");
-		}
-		this.beanFactory = (ConfigurableListableBeanFactory) beanFactory;
-		this.exprResolver = ((ConfigurableListableBeanFactory) beanFactory).getBeanExpressionResolver();
-		this.exprContext = new BeanExpressionContext((ConfigurableListableBeanFactory) beanFactory, null);
-	}
+    @Override
+    public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
+        if (!(beanFactory instanceof ConfigurableListableBeanFactory)) {
+            throw new IllegalArgumentException(
+                    "NacosValueAnnotationBeanPostProcessor requires a ConfigurableListableBeanFactory");
+        }
+        this.beanFactory = (ConfigurableListableBeanFactory) beanFactory;
+        this.exprResolver = ((ConfigurableListableBeanFactory) beanFactory).getBeanExpressionResolver();
+        this.exprContext = new BeanExpressionContext((ConfigurableListableBeanFactory) beanFactory, null);
+    }
 
-	@Override
-	public void setEnvironment(Environment environment) {
-		this.environment = environment;
-	}
+    @Override
+    public void setEnvironment(Environment environment) {
+        this.environment = environment;
+    }
 
-	@Override
-	protected Object doGetInjectedBean(AnnotationAttributes attributes, Object bean,
-			String beanName, Class<?> injectedType,
-			InjectionMetadata.InjectedElement injectedElement) throws Exception {
+    @Override
+    protected Object doGetInjectedBean(AnnotationAttributes attributes, Object bean,
+                                       String beanName, Class<?> injectedType,
+                                       InjectionMetadata.InjectedElement injectedElement) throws Exception {
         Object value = resolveStringValue(attributes.getString("value"));
         Member member = injectedElement.getMember();
-		if (member instanceof Field) {
-			return convertIfNecessary((Field) member, value);
-		}
+        if (member instanceof Field) {
+            return convertIfNecessary((Field) member, value);
+        }
 
-		if (member instanceof Method) {
-			return convertIfNecessary((Method) member, value);
-		}
+        if (member instanceof Method) {
+            return convertIfNecessary((Method) member, value);
+        }
 
-		return null;
-	}
+        return null;
+    }
 
-	@Override
-	protected String buildInjectedObjectCacheKey(AnnotationAttributes attributes,
-			Object bean, String beanName, Class<?> injectedType,
-			InjectionMetadata.InjectedElement injectedElement) {
-		return bean.getClass().getName() + attributes;
-	}
+    @Override
+    protected String buildInjectedObjectCacheKey(AnnotationAttributes attributes,
+                                                 Object bean, String beanName, Class<?> injectedType,
+                                                 InjectionMetadata.InjectedElement injectedElement) {
+        return bean.getClass().getName() + attributes;
+    }
 
-	@Override
-	public Object postProcessBeforeInitialization(Object bean, final String beanName)
-			throws BeansException {
+    @Override
+    public Object postProcessBeforeInitialization(Object bean, final String beanName)
+            throws BeansException {
+        // 将NacosValue定义的字段存放在placeholderNacosValueTargetMap中
+        doWithFields(bean, beanName);
+        // 将方法中参数被NacosValue定义的方法存放在placeholderNacosValueTargetMap中
+        doWithMethods(bean, beanName);
 
-		doWithFields(bean, beanName);
+        return super.postProcessBeforeInitialization(bean, beanName);
+    }
 
-		doWithMethods(bean, beanName);
+    /**
+     * 来自
+     *
+     * @see DelegatingEventPublishingListener#receiveConfigInfo(java.lang.String)
+     */
+    @Override
+    public void onApplicationEvent(NacosConfigReceivedEvent event) {
+        // In to this event receiver, the environment has been updated the
+        // latest configuration information, pull directly from the environment
+        // fix issue #142
+        // placeholderNacosValueTargetMap保存着被@NacosValue标记的field和method
+        for (Map.Entry<String, List<NacosValueTarget>> entry : placeholderNacosValueTargetMap
+                .entrySet()) {
+            String key = environment.resolvePlaceholders(entry.getKey());
+            // 取出新的值
+            String newValue = environment.getProperty(key);
 
-		return super.postProcessBeforeInitialization(bean, beanName);
-	}
+            if (newValue == null) {
+                continue;
+            }
+            List<NacosValueTarget> beanPropertyList = entry.getValue();
+            for (NacosValueTarget target : beanPropertyList) {
+                String md5String = MD5Utils.md5Hex(newValue, "UTF-8");
+                // Md5进行比较
+                boolean isUpdate = !target.lastMD5.equals(md5String);
+                if (isUpdate) {
+                    target.updateLastMD5(md5String);
+                    Object evaluatedValue = resolveNotifyValue(target.nacosValueExpr, key, newValue);
+                    if (target.method == null) {
+                        setField(target, evaluatedValue);
+                    } else {
+                        setMethod(target, evaluatedValue);
+                    }
+                }
+            }
+        }
+    }
 
-	@Override
-	public void onApplicationEvent(NacosConfigReceivedEvent event) {
-		// In to this event receiver, the environment has been updated the
-		// latest configuration information, pull directly from the environment
-		// fix issue #142
-		for (Map.Entry<String, List<NacosValueTarget>> entry : placeholderNacosValueTargetMap
-				.entrySet()) {
-			String key = environment.resolvePlaceholders(entry.getKey());
-			String newValue = environment.getProperty(key);
+    private Object resolveNotifyValue(String nacosValueExpr, String key, String newValue) {
+        String spelExpr = nacosValueExpr.replaceAll("\\$\\{" + key + PLACEHOLDER_SUFFIX, newValue);
+        return resolveStringValue(spelExpr);
+    }
 
-			if (newValue == null) {
-				continue;
-			}
-			List<NacosValueTarget> beanPropertyList = entry.getValue();
-			for (NacosValueTarget target : beanPropertyList) {
-				String md5String = MD5Utils.md5Hex(newValue, "UTF-8");
-				boolean isUpdate = !target.lastMD5.equals(md5String);
-				if (isUpdate) {
-					target.updateLastMD5(md5String);
-					Object evaluatedValue = resolveNotifyValue(target.nacosValueExpr, key, newValue);
-					if (target.method == null) {
-						setField(target, evaluatedValue);
-					}
-					else {
-						setMethod(target, evaluatedValue);
-					}
-				}
-			}
-		}
-	}
+    private Object resolveStringValue(String strVal) {
+        String value = beanFactory.resolveEmbeddedValue(strVal);
+        if (exprResolver != null && value != null) {
+            return exprResolver.evaluate(value, exprContext);
+        }
+        return value;
+    }
 
-	private Object resolveNotifyValue(String nacosValueExpr, String key, String newValue) {
-		String spelExpr = nacosValueExpr.replaceAll("\\$\\{" + key + PLACEHOLDER_SUFFIX, newValue);
-		return resolveStringValue(spelExpr);
-	}
+    private Object convertIfNecessary(Field field, Object value) {
+        TypeConverter converter = beanFactory.getTypeConverter();
+        return converter.convertIfNecessary(value, field.getType(), field);
+    }
 
-	private Object resolveStringValue(String strVal) {
-		String value = beanFactory.resolveEmbeddedValue(strVal);
-		if (exprResolver != null && value != null) {
-			return exprResolver.evaluate(value, exprContext);
-		}
-		return value;
-	}
+    private Object convertIfNecessary(Method method, Object value) {
+        Class<?>[] paramTypes = method.getParameterTypes();
+        Object[] arguments = new Object[paramTypes.length];
 
-	private Object convertIfNecessary(Field field, Object value) {
-		TypeConverter converter = beanFactory.getTypeConverter();
-		return converter.convertIfNecessary(value, field.getType(), field);
-	}
+        TypeConverter converter = beanFactory.getTypeConverter();
 
-	private Object convertIfNecessary(Method method, Object value) {
-		Class<?>[] paramTypes = method.getParameterTypes();
-		Object[] arguments = new Object[paramTypes.length];
+        if (arguments.length == 1) {
+            return converter.convertIfNecessary(value, paramTypes[0],
+                    new MethodParameter(method, 0));
+        }
 
-		TypeConverter converter = beanFactory.getTypeConverter();
+        for (int i = 0; i < arguments.length; i++) {
+            arguments[i] = converter.convertIfNecessary(value, paramTypes[i],
+                    new MethodParameter(method, i));
+        }
 
-		if (arguments.length == 1) {
-			return converter.convertIfNecessary(value, paramTypes[0],
-					new MethodParameter(method, 0));
-		}
+        return arguments;
+    }
 
-		for (int i = 0; i < arguments.length; i++) {
-			arguments[i] = converter.convertIfNecessary(value, paramTypes[i],
-					new MethodParameter(method, i));
-		}
+    private void doWithFields(final Object bean, final String beanName) {
+        ReflectionUtils.doWithFields(bean.getClass(),
+                new ReflectionUtils.FieldCallback() {
+                    @Override
+                    public void doWith(Field field) throws IllegalArgumentException {
+                        NacosValue annotation = getAnnotation(field, NacosValue.class);
+                        doWithAnnotation(beanName, bean, annotation, field.getModifiers(),
+                                null, field);
+                    }
+                });
+    }
 
-		return arguments;
-	}
+    private void doWithMethods(final Object bean, final String beanName) {
+        ReflectionUtils.doWithMethods(bean.getClass(),
+                new ReflectionUtils.MethodCallback() {
+                    @Override
+                    public void doWith(Method method) throws IllegalArgumentException {
+                        NacosValue annotation = getAnnotation(method, NacosValue.class);
+                        doWithAnnotation(beanName, bean, annotation,
+                                method.getModifiers(), method, null);
+                    }
+                });
+    }
 
-	private void doWithFields(final Object bean, final String beanName) {
-		ReflectionUtils.doWithFields(bean.getClass(),
-				new ReflectionUtils.FieldCallback() {
-					@Override
-					public void doWith(Field field) throws IllegalArgumentException {
-						NacosValue annotation = getAnnotation(field, NacosValue.class);
-						doWithAnnotation(beanName, bean, annotation, field.getModifiers(),
-								null, field);
-					}
-				});
-	}
+    private void doWithAnnotation(String beanName, Object bean, NacosValue annotation,
+                                  int modifiers, Method method, Field field) {
+        if (annotation != null) {
+            if (Modifier.isStatic(modifiers)) {
+                return;
+            }
 
-	private void doWithMethods(final Object bean, final String beanName) {
-		ReflectionUtils.doWithMethods(bean.getClass(),
-				new ReflectionUtils.MethodCallback() {
-					@Override
-					public void doWith(Method method) throws IllegalArgumentException {
-						NacosValue annotation = getAnnotation(method, NacosValue.class);
-						doWithAnnotation(beanName, bean, annotation,
-								method.getModifiers(), method, null);
-					}
-				});
-	}
+            if (annotation.autoRefreshed()) {
+                String placeholder = resolvePlaceholder(annotation.value());
+                // placeholder=useLocalCache, nacos上存放值的key
+                if (placeholder == null) {
+                    return;
+                }
 
-	private void doWithAnnotation(String beanName, Object bean, NacosValue annotation,
-			int modifiers, Method method, Field field) {
-		if (annotation != null) {
-			if (Modifier.isStatic(modifiers)) {
-				return;
-			}
+                NacosValueTarget nacosValueTarget = new NacosValueTarget(bean, beanName,
+                        method, field, annotation.value());
+                // 将NacosValue定义值放在Map<String,List<T>>中
+                put2ListMap(placeholderNacosValueTargetMap, placeholder,
+                        nacosValueTarget);
+            }
+        }
+    }
 
-			if (annotation.autoRefreshed()) {
-				String placeholder = resolvePlaceholder(annotation.value());
+    private String resolvePlaceholder(String placeholder) {
+        if (!placeholder.startsWith(PLACEHOLDER_PREFIX) && !placeholder.startsWith(SPEL_PREFIX)) {
+            return null;
+        }
 
-				if (placeholder == null) {
-					return;
-				}
+        if (!placeholder.endsWith(PLACEHOLDER_SUFFIX)) {
+            return null;
+        }
 
-				NacosValueTarget nacosValueTarget = new NacosValueTarget(bean, beanName,
-						method, field, annotation.value());
-				put2ListMap(placeholderNacosValueTargetMap, placeholder,
-						nacosValueTarget);
-			}
-		}
-	}
-
-	private String resolvePlaceholder(String placeholder) {
-		if (!placeholder.startsWith(PLACEHOLDER_PREFIX) && !placeholder.startsWith(SPEL_PREFIX)) {
-			return null;
-		}
-
-		if (!placeholder.endsWith(PLACEHOLDER_SUFFIX)) {
-			return null;
-		}
-
-		if (placeholder.length() <= PLACEHOLDER_PREFIX.length()
-				+ PLACEHOLDER_SUFFIX.length()) {
-			return null;
-		}
+        if (placeholder.length() <= PLACEHOLDER_PREFIX.length()
+                + PLACEHOLDER_SUFFIX.length()) {
+            return null;
+        }
         int beginIndex = placeholder.indexOf(PLACEHOLDER_PREFIX);
-		if (beginIndex == -1) {
-		    return null;
+        if (beginIndex == -1) {
+            return null;
         }
-		beginIndex = beginIndex + PLACEHOLDER_PREFIX.length();
+        beginIndex = beginIndex + PLACEHOLDER_PREFIX.length();
         int endIndex = placeholder.indexOf(PLACEHOLDER_SUFFIX, beginIndex);
-		if (endIndex == -1) {
-		    return null;
+        if (endIndex == -1) {
+            return null;
         }
-		placeholder = placeholder.substring(beginIndex, endIndex);
+        placeholder = placeholder.substring(beginIndex, endIndex);
 
-		int separatorIndex = placeholder.indexOf(VALUE_SEPARATOR);
-		if (separatorIndex != -1) {
-			return placeholder.substring(0, separatorIndex);
-		}
+        int separatorIndex = placeholder.indexOf(VALUE_SEPARATOR);
+        if (separatorIndex != -1) {
+            return placeholder.substring(0, separatorIndex);
+        }
 
-		return placeholder;
-	}
+        return placeholder;
+    }
 
-	private <K, V> void put2ListMap(Map<K, List<V>> map, K key, V value) {
-		List<V> valueList = map.get(key);
-		if (valueList == null) {
-			valueList = new ArrayList<V>();
-		}
-		valueList.add(value);
-		map.put(key, valueList);
-	}
+    private <K, V> void put2ListMap(Map<K, List<V>> map, K key, V value) {
+        List<V> valueList = map.get(key);
+        if (valueList == null) {
+            valueList = new ArrayList<V>();
+        }
+        valueList.add(value);
+        map.put(key, valueList);
+    }
 
-	private void setMethod(NacosValueTarget nacosValueTarget, Object propertyValue) {
-		Method method = nacosValueTarget.method;
-		ReflectionUtils.makeAccessible(method);
-		try {
-			method.invoke(nacosValueTarget.bean,
-					convertIfNecessary(method, propertyValue));
+    private void setMethod(NacosValueTarget nacosValueTarget, Object propertyValue) {
+        Method method = nacosValueTarget.method;
+        ReflectionUtils.makeAccessible(method);
+        try {
+            method.invoke(nacosValueTarget.bean,
+                    convertIfNecessary(method, propertyValue));
 
-			if (logger.isDebugEnabled()) {
-				logger.debug("Update value with {} (method) in {} (bean) with {}",
-						method.getName(), nacosValueTarget.beanName, propertyValue);
-			}
-		}
-		catch (Throwable e) {
-			if (logger.isErrorEnabled()) {
-				logger.error("Can't update value with " + method.getName()
-						+ " (method) in " + nacosValueTarget.beanName + " (bean)", e);
-			}
-		}
-	}
+            if (logger.isDebugEnabled()) {
+                logger.debug("Update value with {} (method) in {} (bean) with {}",
+                        method.getName(), nacosValueTarget.beanName, propertyValue);
+            }
+        } catch (Throwable e) {
+            if (logger.isErrorEnabled()) {
+                logger.error("Can't update value with " + method.getName()
+                        + " (method) in " + nacosValueTarget.beanName + " (bean)", e);
+            }
+        }
+    }
 
-	private void setField(final NacosValueTarget nacosValueTarget,
-			final Object propertyValue) {
-		final Object bean = nacosValueTarget.bean;
+    private void setField(final NacosValueTarget nacosValueTarget,
+                          final Object propertyValue) {
+        final Object bean = nacosValueTarget.bean;
 
-		Field field = nacosValueTarget.field;
+        Field field = nacosValueTarget.field;
 
-		String fieldName = field.getName();
+        String fieldName = field.getName();
 
-		try {
-			ReflectionUtils.makeAccessible(field);
-			field.set(bean, convertIfNecessary(field, propertyValue));
+        try {
+            ReflectionUtils.makeAccessible(field);
+            field.set(bean, convertIfNecessary(field, propertyValue));
 
-			if (logger.isDebugEnabled()) {
-				logger.debug("Update value of the {}" + " (field) in {} (bean) with {}",
-						fieldName, nacosValueTarget.beanName, propertyValue);
-			}
-		}
-		catch (Throwable e) {
-			if (logger.isErrorEnabled()) {
-				logger.error("Can't update value of the " + fieldName + " (field) in "
-						+ nacosValueTarget.beanName + " (bean)", e);
-			}
-		}
-	}
+            if (logger.isDebugEnabled()) {
+                logger.debug("Update value of the {}" + " (field) in {} (bean) with {}",
+                        fieldName, nacosValueTarget.beanName, propertyValue);
+            }
+        } catch (Throwable e) {
+            if (logger.isErrorEnabled()) {
+                logger.error("Can't update value of the " + fieldName + " (field) in "
+                        + nacosValueTarget.beanName + " (bean)", e);
+            }
+        }
+    }
 
-	private static class NacosValueTarget {
+    private static class NacosValueTarget {
 
-		private final Object bean;
+        private final Object bean;
 
-		private final String beanName;
+        private final String beanName;
 
-		private final Method method;
+        private final Method method;
 
-		private final Field field;
+        private final Field field;
 
-		private String lastMD5;
+        private String lastMD5;
 
-		private final String nacosValueExpr;
+        private final String nacosValueExpr;
 
-		NacosValueTarget(Object bean, String beanName, Method method, Field field, String nacosValueExpr) {
-			this.bean = bean;
+        NacosValueTarget(Object bean, String beanName, Method method, Field field, String nacosValueExpr) {
+            this.bean = bean;
 
-			this.beanName = beanName;
+            this.beanName = beanName;
 
-			this.method = method;
+            this.method = method;
 
-			this.field = field;
+            this.field = field;
 
-			this.lastMD5 = "";
+            this.lastMD5 = "";
 
-			this.nacosValueExpr = resolveExpr(nacosValueExpr);
-		}
+            this.nacosValueExpr = resolveExpr(nacosValueExpr);
+        }
 
-		private String resolveExpr(String nacosValueExpr) {
-			int replaceHolderBegin = nacosValueExpr.indexOf(PLACEHOLDER_PREFIX) + PLACEHOLDER_PREFIX.length();
-			int replaceHolderEnd = nacosValueExpr.indexOf(PLACEHOLDER_SUFFIX, replaceHolderBegin);
+        private String resolveExpr(String nacosValueExpr) {
+            int replaceHolderBegin = nacosValueExpr.indexOf(PLACEHOLDER_PREFIX) + PLACEHOLDER_PREFIX.length();
+            int replaceHolderEnd = nacosValueExpr.indexOf(PLACEHOLDER_SUFFIX, replaceHolderBegin);
 
-			String replaceHolder = nacosValueExpr.substring(replaceHolderBegin, replaceHolderEnd);
-			int separatorIndex = replaceHolder.indexOf(VALUE_SEPARATOR);
-			if (separatorIndex != -1) {
-				return nacosValueExpr.substring(0, separatorIndex + replaceHolderBegin) + nacosValueExpr.substring(replaceHolderEnd);
-			}
-			return nacosValueExpr;
-		}
+            String replaceHolder = nacosValueExpr.substring(replaceHolderBegin, replaceHolderEnd);
+            int separatorIndex = replaceHolder.indexOf(VALUE_SEPARATOR);
+            if (separatorIndex != -1) {
+                return nacosValueExpr.substring(0, separatorIndex + replaceHolderBegin) + nacosValueExpr.substring(replaceHolderEnd);
+            }
+            return nacosValueExpr;
+        }
 
-		protected void updateLastMD5(String newMD5) {
-			this.lastMD5 = newMD5;
-		}
+        protected void updateLastMD5(String newMD5) {
+            this.lastMD5 = newMD5;
+        }
 
-	}
+    }
 
 }
